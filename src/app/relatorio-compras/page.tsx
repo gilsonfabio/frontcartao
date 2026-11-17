@@ -35,11 +35,18 @@ interface Convenio {
   con_Fantasia: string;
 }
 
+interface Servidor {
+  id_user: string | number;
+  id_matricula: number;
+  nome_user: string;
+}
+
 interface RelatorioResponse {
   success: boolean;
   ano: number;
   mes: number | null;
   convenio: number | null;
+  servidor?: string | null;
   total: number;
   totalVendas: number;
   valorTotalVendido: number;
@@ -97,10 +104,17 @@ export default function RelatorioCompras() {
   const [ano, setAno] = useState<number>(2000);
   const [mes, setMes] = useState<number | "">("");
 
-  // NOVO FILTRO DE CONVÊNIO
+  // FILTRO DE CONVÊNIO
   const [convenio, setConvenio] = useState<number | "">("");
   const [convenios, setConvenios] = useState<Convenio[]>([]);
   const [loadingConvenios, setLoadingConvenios] = useState(false);
+
+  // FILTRO POR MATRÍCULA
+  const [matricula, setMatricula] = useState("");
+  const [servidorId, setServidorId] = useState<string>("");
+  const [servidorEncontrado, setServidorEncontrado] =
+    useState<Servidor | null>(null);
+  const [loadingServidor, setLoadingServidor] = useState(false);
 
   const [pagina, setPagina] = useState(1);
   const [limite] = useState(50);
@@ -120,7 +134,7 @@ export default function RelatorioCompras() {
     null
   );
 
-  // Inicializa o ano atual.
+  // INICIALIZA O ANO ATUAL
   useEffect(() => {
     setAno(new Date().getFullYear());
   }, []);
@@ -155,21 +169,6 @@ export default function RelatorioCompras() {
     carregarConvenios();
   }, []);
 
-  function alternarParcelas(idCompra: number) {
-    setCompraExpandida((atual) =>
-      atual === idCompra ? null : idCompra
-    );
-  }
-
-  // PARÂMETROS COMUNS A TODOS OS FILTROS
-  function obterParametros() {
-    return {
-      ano,
-      ...(mes !== "" ? { mes } : {}),
-      ...(convenio !== "" ? { convenio } : {}),
-    };
-  }
-
   // LIMPA OS RESULTADOS QUANDO ALTERAR OS FILTROS
   function limparConsulta() {
     setDados(null);
@@ -183,8 +182,109 @@ export default function RelatorioCompras() {
     });
   }
 
+  // BUSCA SERVIDOR PELA MATRÍCULA
+  async function buscarServidor() {
+    if (!matricula.trim()) {
+      setErro("Informe a matrícula do servidor.");
+      return;
+    }
+
+    try {
+      setLoadingServidor(true);
+      setErro("");
+
+      setServidorId("");
+      setServidorEncontrado(null);
+
+      limparConsulta();
+
+      const response = await api.get("/servidores", {
+        params: {
+          matricula: matricula.trim(),
+        },
+      });
+
+      const resultado = response.data;
+
+      // ACEITA RESPOSTA COMO OBJETO, ARRAY OU OBJETO COM SERVIDOR
+      const servidor: Servidor | null =
+        resultado.servidor ||
+        (Array.isArray(resultado.servidores)
+          ? resultado.servidores[0]
+          : null) ||
+        (Array.isArray(resultado)
+          ? resultado[0]
+          : null) ||
+        (resultado.id_user
+          ? resultado
+          : null);
+
+      if (!servidor || servidor.id_user == null) {
+        setServidorEncontrado(null);
+        setServidorId("");
+        setErro(
+          "Nenhum servidor encontrado com esta matrícula."
+        );
+        return;
+      }
+
+      setServidorEncontrado(servidor);
+      setServidorId(String(servidor.id_user));
+
+    } catch (error: any) {
+      console.error("Erro ao buscar servidor:", error);
+
+      setServidorEncontrado(null);
+      setServidorId("");
+
+      setErro(
+        error.response?.data?.message ||
+        "Não foi possível localizar o servidor pela matrícula."
+      );
+
+    } finally {
+      setLoadingServidor(false);
+    }
+  }
+
+  // ALTERNAR EXIBIÇÃO DAS PARCELAS
+  function alternarParcelas(idCompra: number) {
+    setCompraExpandida((atual) =>
+      atual === idCompra ? null : idCompra
+    );
+  }
+
+  // PARÂMETROS COMUNS A TODOS OS FILTROS
+  function obterParametros() {
+    return {
+      ano,
+      ...(mes !== "" ? { mes } : {}),
+      ...(convenio !== "" ? { convenio } : {}),
+      ...(servidorId !== "" ? { servidor: servidorId } : {}),
+    };
+  }
+
+  // NOME DO SERVIDOR SELECIONADO
+  const nomeServidorSelecionado = servidorEncontrado
+    ? `${servidorEncontrado.nome_user} - Matrícula: ${servidorEncontrado.id_matricula}`
+    : "Todos os servidores";
+
+  // VALIDA SE A MATRÍCULA INFORMADA FOI LOCALIZADA
+  function validarFiltroServidor(): boolean {
+    if (matricula.trim() !== "" && !servidorId) {
+      setErro(
+        "Busque e localize o servidor pela matrícula antes de continuar."
+      );
+      return false;
+    }
+
+    return true;
+  }
+
   // CONSULTA O RELATÓRIO PAGINADO
   async function consultar(numeroPagina = 1) {
+    if (!validarFiltroServidor()) return;
+
     try {
       setLoading(true);
       setErro("");
@@ -207,10 +307,10 @@ export default function RelatorioCompras() {
         throw new Error("Não foi possível consultar o relatório.");
       }
 
-      // Dados retornados pela API.
+      // DADOS RETORNADOS PELA API
       setDados(resultado);
 
-      // Totalizadores gerais do período e convênio selecionados.
+      // TOTALIZADORES GERAIS
       setTotalizadores({
         quantidadeVendas: Number(
           resultado.totalVendas ?? resultado.total ?? 0
@@ -243,15 +343,17 @@ export default function RelatorioCompras() {
     }
   }
 
-  // GERA PDF COM TODAS AS COMPRAS DO PERÍODO E CONVÊNIO SELECIONADOS.
+  // GERA PDF COM TODAS AS COMPRAS DOS FILTROS SELECIONADOS
   async function gerarPDF() {
+    if (!validarFiltroServidor()) return;
+
     try {
       setGerandoPDF(true);
       setErro("");
 
       const limitePDF = 100;
 
-      // Busca a primeira página e os totalizadores.
+      // BUSCA A PRIMEIRA PÁGINA E OS TOTALIZADORES
       const primeiraResposta = await api.get<RelatorioResponse>(
         "/relatorioCompras",
         {
@@ -277,7 +379,7 @@ export default function RelatorioCompras() {
         ...primeiraPagina.compras,
       ];
 
-      // Calcula as páginas restantes.
+      // CALCULA AS PÁGINAS RESTANTES
       const paginasRestantes: number[] = [];
 
       for (
@@ -288,7 +390,7 @@ export default function RelatorioCompras() {
         paginasRestantes.push(numeroPagina);
       }
 
-      // Busca as páginas em lotes de cinco requisições.
+      // BUSCA AS PÁGINAS EM LOTES DE CINCO REQUISIÇÕES
       const tamanhoLote = 5;
 
       for (
@@ -321,7 +423,7 @@ export default function RelatorioCompras() {
         });
       }
 
-      // Totalizadores fornecidos pelo backend.
+      // TOTALIZADORES FORNECIDOS PELO BACKEND
       const totaisPDF: Totalizadores = {
         quantidadeVendas: Number(
           primeiraPagina.totalVendas ?? primeiraPagina.total
@@ -331,7 +433,7 @@ export default function RelatorioCompras() {
         ),
       };
 
-      // Importa o pdfmake.
+      // IMPORTA O PDFMAKE
       const pdfMakeModule = await import(
         "pdfmake/build/pdfmake"
       );
@@ -351,7 +453,7 @@ export default function RelatorioCompras() {
         pdfFonts.vfs ||
         pdfFonts;
 
-      // Cabeçalho da tabela.
+      // CABEÇALHO DA TABELA
       const corpoTabela: any[] = [
         [
           { text: "Compra", bold: true, fontSize: 6 },
@@ -366,7 +468,7 @@ export default function RelatorioCompras() {
         ],
       ];
 
-      // Percorre todas as compras e parcelas.
+      // PERCORRE TODAS AS COMPRAS E PARCELAS
       todasCompras.forEach((compra) => {
         const associadoConvenio = {
           text: [
@@ -426,7 +528,7 @@ export default function RelatorioCompras() {
           ? meses.find((item) => item.valor === mes)?.nome
           : "Todos os meses";
 
-      // Identifica o convênio selecionado.
+      // IDENTIFICA O CONVÊNIO SELECIONADO
       const nomeConvenio =
         convenio !== ""
           ? convenios.find(
@@ -442,7 +544,10 @@ export default function RelatorioCompras() {
       const identificacaoConvenio =
         convenio !== "" ? convenio : "Todos";
 
-      // DOCUMENTO PDF - A4 VERTICAL.
+      const identificacaoServidor =
+        servidorId !== "" ? servidorId : "Todos";
+
+      // DOCUMENTO PDF - A4 VERTICAL
       const documento = {
         pageOrientation: "portrait",
         pageSize: "A4",
@@ -463,7 +568,7 @@ export default function RelatorioCompras() {
             margin: [0, 0, 0, 3],
           },
           {
-            text: `Convênio: ${nomeConvenio} | Total de compras: ${primeiraPagina.total}`,
+            text: `Convênio: ${nomeConvenio} | Servidor: ${nomeServidorSelecionado} | Total de compras: ${primeiraPagina.total}`,
             fontSize: 8,
             alignment: "center",
             margin: [0, 0, 0, 5],
@@ -538,7 +643,7 @@ export default function RelatorioCompras() {
       pdfMake
         .createPdf(documento)
         .download(
-          `Relatorio_Compras_${identificacaoFiltro}_Convenio_${identificacaoConvenio}.pdf`
+          `Relatorio_Compras_${identificacaoFiltro}_Convenio_${identificacaoConvenio}_Servidor_${identificacaoServidor}.pdf`
         );
 
     } catch (error: any) {
@@ -554,7 +659,7 @@ export default function RelatorioCompras() {
     }
   }
 
-  // NOME DO CONVÊNIO PARA EXIBIÇÃO.
+  // NOME DO CONVÊNIO PARA EXIBIÇÃO
   const nomeConvenioSelecionado =
     convenio !== ""
       ? convenios.find(
@@ -631,7 +736,7 @@ export default function RelatorioCompras() {
             </select>
           </div>
 
-          {/* NOVO FILTRO DE CONVÊNIO */}
+          {/* FILTRO DE CONVÊNIO */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Convênio
@@ -668,6 +773,52 @@ export default function RelatorioCompras() {
             </select>
           </div>
 
+          {/* FILTRO POR MATRÍCULA */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Matrícula do servidor
+            </label>
+
+            <div className="flex gap-2">
+              <input
+                type="text"
+                inputMode="numeric"
+                value={matricula}
+                onChange={(e) => {
+                  setMatricula(e.target.value);
+                  setServidorId("");
+                  setServidorEncontrado(null);
+                  limparConsulta();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    buscarServidor();
+                  }
+                }}
+                placeholder="Digite a matrícula"
+                className="border border-gray-300 rounded-md px-3 py-2 w-44"
+              />
+
+              <button
+                type="button"
+                onClick={buscarServidor}
+                disabled={loadingServidor || !matricula.trim()}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md disabled:opacity-50"
+              >
+                {loadingServidor ? "Buscando..." : "Buscar"}
+              </button>
+            </div>
+
+            {servidorEncontrado && (
+              <p className="text-sm text-green-700 mt-2">
+                Servidor:{" "}
+                <strong>{servidorEncontrado.nome_user}</strong>
+                {" - Matrícula: "}
+                {servidorEncontrado.id_matricula}
+              </p>
+            )}
+          </div>
+
           {/* CONSULTAR */}
           <button
             type="button"
@@ -675,8 +826,10 @@ export default function RelatorioCompras() {
             disabled={
               loading ||
               gerandoPDF ||
+              loadingServidor ||
               !ano ||
-              loadingConvenios
+              loadingConvenios ||
+              (matricula.trim() !== "" && !servidorId)
             }
             className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-md disabled:opacity-50"
           >
@@ -690,6 +843,7 @@ export default function RelatorioCompras() {
             disabled={
               gerandoPDF ||
               loading ||
+              loadingServidor ||
               !dados ||
               dados.total === 0
             }
@@ -712,7 +866,7 @@ export default function RelatorioCompras() {
 
       {/* RESUMO E TOTALIZADORES */}
       {dados && (
-        <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-7 gap-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-8 gap-4 mb-6">
 
           {/* ANO */}
           <div className="bg-white shadow rounded-lg p-4">
@@ -751,6 +905,20 @@ export default function RelatorioCompras() {
               title={nomeConvenioSelecionado}
             >
               {nomeConvenioSelecionado}
+            </p>
+          </div>
+
+          {/* SERVIDOR */}
+          <div className="bg-white shadow rounded-lg p-4">
+            <p className="text-sm text-gray-500">
+              Servidor consultado
+            </p>
+
+            <p
+              className="text-sm font-bold text-gray-800 mt-1"
+              title={nomeServidorSelecionado}
+            >
+              {nomeServidorSelecionado}
             </p>
           </div>
 
@@ -1005,7 +1173,7 @@ export default function RelatorioCompras() {
                   >
                     {dados
                       ? "Nenhuma compra encontrada para os filtros selecionados."
-                      : "Selecione o ano, mês e convênio e clique em Consultar."}
+                      : "Selecione o ano e os filtros desejados e clique em Consultar."}
                   </td>
                 </tr>
 
